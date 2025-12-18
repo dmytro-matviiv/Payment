@@ -42,9 +42,9 @@ class PaymentMonitor:
             print(f"⚠️  Помилка збереження оброблених транзакцій: {e}")
         
     def get_recent_transactions(self):
-        """Отримує останні транзакції з Tronscan API"""
+        """Отримує останні трансфери токенів з Tronscan API"""
         try:
-            url = "https://apilist.tronscan.org/api/transaction"
+            url = "https://apilist.tronscan.org/api/transfer"
             headers = {
                 "TRON-PRO-API-KEY": self.api_token
             }
@@ -68,7 +68,7 @@ class PaymentMonitor:
                 print(f"Помилка API: {response.status_code} - {response.text}")
                 return []
         except Exception as e:
-            print(f"Помилка при отриманні транзакцій: {e}")
+            print(f"Помилка при отриманні трансферів: {e}")
             return []
     
     def format_startup_message(self):
@@ -282,13 +282,13 @@ class PaymentMonitor:
         """Основна функція перевірки платежів"""
         print(f"🔍 Перевірка платежів... {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
-        transactions = self.get_recent_transactions()
+        transfers = self.get_recent_transactions()
         
-        if not transactions:
-            print("⚠️  Транзакції не знайдено або помилка API")
+        if not transfers:
+            print("⚠️  Трансфери не знайдено або помилка API")
             return
         
-        new_transactions = self.process_transactions(transactions)
+        new_transactions = self.process_transactions(transfers)
         
         if new_transactions:
             print(f"✅ Знайдено {len(new_transactions)} нових платежів")
