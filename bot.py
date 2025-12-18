@@ -16,9 +16,11 @@ class PaymentMonitor:
         self.channel_id = config.TELEGRAM_CHANNEL_ID
         self.processed_txns_file = "processed_transactions.json"
         self.processed_txns = self.load_processed_txns()  # Для уникнення дублікатів
-        # Встановлюємо timestamp на 0, щоб обробити всі transfers, які ще не були оброблені
-        # (дублікати відфільтруються через processed_txns)
-        self.last_checked_timestamp = 0  # в мілісекундах
+        # USDT TRC20 contract address
+        self.usdt_contract = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+        # Встановлюємо timestamp на поточний час при запуску, щоб не обробляти старі транзакції
+        self.last_checked_timestamp = int(time.time() * 1000)  # в мілісекундах
+        self.is_first_run = True  # Прапорець першого запуску
     
     def load_processed_txns(self):
         """Завантажує список оброблених транзакцій з файлу"""
@@ -331,15 +333,62 @@ class PaymentMonitor:
                 print("   Перевірте права бота в каналі (має бути адміністратором)")
             return False
     
+    def is_usdt_transaction(self, txn):
+        """Перевіряє чи це USDT (TRC20) транзакція"""
+        try:
+            # Перевіряємо contract address (різні варіанти назв полів)
+            contract_address = (txn.get("contractAddress") or 
+                              txn.get("contract_address") or 
+                              txn.get("tokenContractAddress") or 
+                              txn.get("token_contract_address") or
+                              txn.get("contract") or
+                              txn.get("tokenContract") or
+                              "")
+            
+            if contract_address:
+                # Перевіряємо чи це USDT contract address
+                if contract_address.upper() == self.usdt_contract.upper():
+                    return True
+                # Також перевіряємо чи в contract address є USDT contract
+                if self.usdt_contract.upper() in contract_address.upper():
+                    return True
+            
+            # Перевіряємо по назві та символу токена
+            token_name = (txn.get("tokenName") or 
+                         txn.get("token_name") or 
+                         txn.get("name") or 
+                         txn.get("token") or
+                         "").upper()
+            
+            token_symbol = (txn.get("tokenSymbol") or 
+                           txn.get("token_symbol") or 
+                           txn.get("symbol") or 
+                           "").upper()
+            
+            # Якщо в назві або символі є USDT
+            if "USDT" in token_name or "USDT" in token_symbol:
+                return True
+            
+            # Додаткова перевірка: якщо tokenInfo містить contract address
+            token_info = txn.get("tokenInfo") or txn.get("token_info") or {}
+            if isinstance(token_info, dict):
+                token_contract = (token_info.get("contractAddress") or 
+                                token_info.get("contract_address") or 
+                                token_info.get("address") or "")
+                if token_contract and token_contract.upper() == self.usdt_contract.upper():
+                    return True
+            
+            return False
+        except Exception as e:
+            print(f"⚠️  Помилка перевірки USDT: {e}")
+            return False
+    
     def process_transactions(self, transactions):
         """Обробляє транзакції та відправляє повідомлення про нові"""
         new_transactions = []
         
         print(f"🔍 Обробка {len(transactions)} трансферів...")
-        if self.last_checked_timestamp > 0:
-            print(f"⏰ Остання перевірка: {datetime.fromtimestamp(self.last_checked_timestamp / 1000).strftime('%Y-%m-%d %H:%M:%S')}")
-        else:
-            print(f"⏰ Перший запуск - обробляємо всі доступні transfers")
+        print(f"⏰ Остання перевірка: {datetime.fromtimestamp(self.last_checked_timestamp / 1000).strftime('%Y-%m-%d %H:%M:%S')}")
         
         for txn in transactions:
             # Спробуємо різні варіанти назв полів для hash
@@ -371,27 +420,30 @@ class PaymentMonitor:
                           txn.get("from") or 
                           "")
             
-            print(f"  📋 Трансфер: hash={txn_hash[:10] if txn_hash else 'N/A'}..., to={to_address[:10] if to_address else 'N/A'}..., timestamp={txn_timestamp}")
-            
-            # Перевіряємо чи це нова транзакція
+            # Перевіряємо чи це нова транзакція (після останньої перевірки)
             if txn_hash and txn_hash not in self.processed_txns:
+                # Перевіряємо чи це транзакція після останньої перевірки
+                if txn_timestamp > 0 and txn_timestamp < self.last_checked_timestamp:
+                    # Стара транзакція, пропускаємо
+                    continue
+                
                 # Перевіряємо чи це вхідна транзакція (оплата)
                 if to_address and to_address.upper() == self.tron_address.upper():
-                    print(f"    ✅ Знайдено вхідний трансфер на нашу адресу!")
-                    # Для transfers не перевіряємо timestamp строго, бо вони можуть бути старіші
-                    # але ми їх ще не обробили
-                    new_transactions.append(txn)
-                    self.processed_txns.add(txn_hash)
-                    print(f"    ✅ Додано до нових транзакцій")
+                    # Перевіряємо чи це USDT (TRC20)
+                    if self.is_usdt_transaction(txn):
+                        print(f"  ✅ Знайдено новий USDT трансфер: hash={txn_hash[:10]}..., to={to_address[:10]}..., timestamp={txn_timestamp}")
+                        new_transactions.append(txn)
+                        self.processed_txns.add(txn_hash)
+                    else:
+                        print(f"  ⚠️  Трансфер не USDT (пропускаємо): hash={txn_hash[:10]}...")
                 else:
-                    print(f"    ⚠️  Не на нашу адресу (to: {to_address}, наша: {self.tron_address})")
+                    # Не на нашу адресу, пропускаємо без виводу
+                    pass
             else:
-                if txn_hash:
-                    print(f"    ℹ️  Трансфер вже оброблено")
-                else:
-                    print(f"    ⚠️  Немає hash у трансферу")
+                # Вже оброблено, пропускаємо без виводу
+                pass
         
-        print(f"📊 Підсумок: знайдено {len(new_transactions)} нових вхідних трансферів")
+        print(f"📊 Підсумок: знайдено {len(new_transactions)} нових USDT платежів")
         return new_transactions
     
     async def check_payments(self):
@@ -430,7 +482,7 @@ class PaymentMonitor:
         else:
             print("ℹ️  Нових платежів не знайдено")
         
-        # Оновлюємо час останньої перевірки
+        # Оновлюємо час останньої перевірки після кожної перевірки
         self.last_checked_timestamp = int(time.time() * 1000)
     
     async def start_monitoring(self):
@@ -509,6 +561,12 @@ class PaymentMonitor:
                         print("⚠️  Не вдалося відправити повідомлення про запуск\n")
             except Exception as e:
                 print(f"⚠️  Помилка відправки повідомлення про запуск: {e}\n")
+        
+        # Після відправки повідомлення про запуск, позначаємо що перший запуск завершено
+        self.is_first_run = False
+        
+        # Невелика затримка перед першою перевіркою, щоб не обробляти старі транзакції
+        await asyncio.sleep(2)
         
         while True:
             try:
