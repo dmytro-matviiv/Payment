@@ -15,8 +15,10 @@ class PaymentMonitor:
         self.api_token = config.TRONSCAN_API_TOKEN
         self.channel_id = config.TELEGRAM_CHANNEL_ID
         self.processed_txns_file = "processed_transactions.json"
-        self.last_checked_timestamp = int(time.time() * 1000)  # в мілісекундах
         self.processed_txns = self.load_processed_txns()  # Для уникнення дублікатів
+        # Встановлюємо timestamp на 0, щоб обробити всі transfers, які ще не були оброблені
+        # (дублікати відфільтруються через processed_txns)
+        self.last_checked_timestamp = 0  # в мілісекундах
     
     def load_processed_txns(self):
         """Завантажує список оброблених транзакцій з файлу"""
@@ -43,33 +45,78 @@ class PaymentMonitor:
         
     def get_recent_transactions(self):
         """Отримує останні трансфери токенів з Tronscan API"""
-        try:
-            url = "https://apilist.tronscan.org/api/transfer"
-            headers = {
-                "TRON-PRO-API-KEY": self.api_token
-            }
-            params = {
-                "address": self.tron_address,
-                "start": 0,
-                "limit": 50,
-                "sort": "-timestamp"
-            }
-            
-            response = requests.get(url, headers=headers, params=params, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("success") and "data" in data:
-                    return data["data"]
-                elif "data" in data:
-                    # Деякі версії API можуть не мати поля success
-                    return data["data"]
-            else:
-                print(f"Помилка API: {response.status_code} - {response.text}")
-                return []
-        except Exception as e:
-            print(f"Помилка при отриманні трансферів: {e}")
-            return []
+        # Спробуємо різні endpoints для transfers
+        endpoints = [
+            "https://apilist.tronscan.org/api/transfer",
+            "https://apilist.tronscan.org/api/trc20/transfer",
+            "https://apilist.tronscan.org/api/transfer/trc20"
+        ]
+        
+        headers = {
+            "TRON-PRO-API-KEY": self.api_token
+        }
+        
+        for url in endpoints:
+            try:
+                params = {
+                    "address": self.tron_address,
+                    "start": 0,
+                    "limit": 50,
+                    "sort": "-timestamp"
+                }
+                
+                print(f"📡 Запит до API: {url}")
+                print(f"📋 Параметри: {params}")
+                
+                response = requests.get(url, headers=headers, params=params, timeout=10)
+                
+                print(f"📥 Статус відповіді: {response.status_code}")
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    print(f"📊 Структура відповіді: keys = {list(data.keys()) if isinstance(data, dict) else 'not a dict'}")
+                    
+                    # Спробуємо різні варіанти структури відповіді
+                    transfers = []
+                    if isinstance(data, dict):
+                        if data.get("success") and "data" in data:
+                            transfers = data["data"]
+                        elif "data" in data:
+                            transfers = data["data"]
+                        elif "transfers" in data:
+                            transfers = data["transfers"]
+                        elif isinstance(data.get("data"), list):
+                            transfers = data["data"]
+                    elif isinstance(data, list):
+                        transfers = data
+                    
+                    if isinstance(transfers, list) and len(transfers) > 0:
+                        print(f"✅ Отримано трансферів: {len(transfers)}")
+                        
+                        # Логуємо перший трансфер для діагностики
+                        print(f"🔍 Приклад першого трансферу (ключі): {list(transfers[0].keys()) if isinstance(transfers[0], dict) else 'not a dict'}")
+                        first_transfer = transfers[0]
+                        print(f"   Hash: {first_transfer.get('hash') or first_transfer.get('transactionHash') or first_transfer.get('txID') or 'N/A'}")
+                        print(f"   To: {first_transfer.get('toAddress') or first_transfer.get('transferToAddress') or first_transfer.get('to') or 'N/A'}")
+                        print(f"   From: {first_transfer.get('fromAddress') or first_transfer.get('transferFromAddress') or first_transfer.get('from') or 'N/A'}")
+                        print(f"   Amount: {first_transfer.get('amount') or first_transfer.get('quant') or first_transfer.get('value') or 'N/A'}")
+                        print(f"   Token: {first_transfer.get('tokenName') or first_transfer.get('token_name') or first_transfer.get('token') or 'N/A'}")
+                        print(f"   Timestamp: {first_transfer.get('timestamp') or first_transfer.get('block_timestamp') or first_transfer.get('time') or 'N/A'}")
+                        
+                        return transfers
+                    else:
+                        print(f"⚠️  Endpoint {url} повернув порожній список, спробуємо наступний...")
+                        continue
+                else:
+                    print(f"⚠️  Endpoint {url} повернув статус {response.status_code}, спробуємо наступний...")
+                    print(f"📄 Відповідь: {response.text[:200]}")
+                    continue
+            except Exception as e:
+                print(f"⚠️  Помилка при запиті до {url}: {e}")
+                continue
+        
+        print(f"❌ Всі endpoints не спрацювали")
+        return []
     
     def format_startup_message(self):
         """Форматує повідомлення про запуск бота"""
@@ -141,16 +188,29 @@ class PaymentMonitor:
     def format_transaction_message(self, txn):
         """Форматує повідомлення про транзакцію"""
         try:
-            # Отримуємо деталі транзакції
-            amount_raw = txn.get("amount", 0)
+            # Отримуємо деталі транзакції - спробуємо різні варіанти назв полів
+            amount_raw = (txn.get("amount") or 
+                         txn.get("quant") or 
+                         txn.get("value") or 
+                         0)
+            
             # Конвертуємо в число якщо потрібно
             try:
                 amount_raw = float(amount_raw) if amount_raw else 0
             except (ValueError, TypeError):
                 amount_raw = 0
             
-            token_name = txn.get("tokenName", "TRX") or "TRX"
-            token_symbol = txn.get("tokenSymbol", "") or txn.get("symbol", "")
+            token_name = (txn.get("tokenName") or 
+                         txn.get("token_name") or 
+                         txn.get("name") or 
+                         "TRX")
+            token_name = token_name or "TRX"
+            
+            token_symbol = (txn.get("tokenSymbol") or 
+                           txn.get("token_symbol") or 
+                           txn.get("symbol") or 
+                           "")
+            token_symbol = token_symbol or ""
             
             # Визначаємо чи це USDT токен (TRC20)
             # USDT TRC20 має contract address або можна визначити по назві
@@ -172,12 +232,30 @@ class PaymentMonitor:
             # Конвертуємо все в USDT
             usdt_amount, display_currency = self.convert_to_usdt(amount, token_name, token_symbol)
             
-            from_address = txn.get("fromAddress") or txn.get("ownerAddress", "Невідомо") or "Невідомо"
-            to_address = txn.get("toAddress", "Невідомо") or "Невідомо"
-            txn_hash = txn.get("hash", "") or ""
+            from_address = (txn.get("fromAddress") or 
+                          txn.get("transferFromAddress") or 
+                          txn.get("from") or 
+                          txn.get("ownerAddress") or 
+                          "Невідомо")
+            from_address = from_address or "Невідомо"
+            
+            to_address = (txn.get("toAddress") or 
+                         txn.get("transferToAddress") or 
+                         txn.get("to") or 
+                         "Невідомо")
+            to_address = to_address or "Невідомо"
+            
+            txn_hash = (txn.get("hash") or 
+                       txn.get("transactionHash") or 
+                       txn.get("txID") or 
+                       "")
+            txn_hash = txn_hash or ""
             
             # Отримуємо timestamp та конвертуємо в число
-            timestamp = txn.get("timestamp", 0)
+            timestamp = (txn.get("timestamp") or 
+                        txn.get("block_timestamp") or 
+                        txn.get("time") or 
+                        0)
             try:
                 timestamp = float(timestamp) if timestamp else 0
             except (ValueError, TypeError):
@@ -257,9 +335,24 @@ class PaymentMonitor:
         """Обробляє транзакції та відправляє повідомлення про нові"""
         new_transactions = []
         
+        print(f"🔍 Обробка {len(transactions)} трансферів...")
+        if self.last_checked_timestamp > 0:
+            print(f"⏰ Остання перевірка: {datetime.fromtimestamp(self.last_checked_timestamp / 1000).strftime('%Y-%m-%d %H:%M:%S')}")
+        else:
+            print(f"⏰ Перший запуск - обробляємо всі доступні transfers")
+        
         for txn in transactions:
-            txn_hash = txn.get("hash")
-            txn_timestamp = txn.get("timestamp", 0)
+            # Спробуємо різні варіанти назв полів для hash
+            txn_hash = (txn.get("hash") or 
+                       txn.get("transactionHash") or 
+                       txn.get("txID") or 
+                       "")
+            
+            # Спробуємо різні варіанти назв полів для timestamp
+            txn_timestamp = (txn.get("timestamp") or 
+                           txn.get("block_timestamp") or 
+                           txn.get("time") or 
+                           0)
             
             # Конвертуємо timestamp в число
             try:
@@ -267,26 +360,57 @@ class PaymentMonitor:
             except (ValueError, TypeError):
                 txn_timestamp = 0
             
+            # Спробуємо різні варіанти назв полів для адреси отримувача
+            to_address = (txn.get("toAddress") or 
+                         txn.get("transferToAddress") or 
+                         txn.get("to") or 
+                         "")
+            
+            from_address = (txn.get("fromAddress") or 
+                          txn.get("transferFromAddress") or 
+                          txn.get("from") or 
+                          "")
+            
+            print(f"  📋 Трансфер: hash={txn_hash[:10] if txn_hash else 'N/A'}..., to={to_address[:10] if to_address else 'N/A'}..., timestamp={txn_timestamp}")
+            
             # Перевіряємо чи це нова транзакція
             if txn_hash and txn_hash not in self.processed_txns:
                 # Перевіряємо чи це вхідна транзакція (оплата)
-                to_address = txn.get("toAddress", "") or ""
-                if to_address.upper() == self.tron_address.upper():
-                    if txn_timestamp > self.last_checked_timestamp:
-                        new_transactions.append(txn)
-                        self.processed_txns.add(txn_hash)
+                if to_address and to_address.upper() == self.tron_address.upper():
+                    print(f"    ✅ Знайдено вхідний трансфер на нашу адресу!")
+                    # Для transfers не перевіряємо timestamp строго, бо вони можуть бути старіші
+                    # але ми їх ще не обробили
+                    new_transactions.append(txn)
+                    self.processed_txns.add(txn_hash)
+                    print(f"    ✅ Додано до нових транзакцій")
+                else:
+                    print(f"    ⚠️  Не на нашу адресу (to: {to_address}, наша: {self.tron_address})")
+            else:
+                if txn_hash:
+                    print(f"    ℹ️  Трансфер вже оброблено")
+                else:
+                    print(f"    ⚠️  Немає hash у трансферу")
         
+        print(f"📊 Підсумок: знайдено {len(new_transactions)} нових вхідних трансферів")
         return new_transactions
     
     async def check_payments(self):
         """Основна функція перевірки платежів"""
+        print(f"\n{'='*60}")
         print(f"🔍 Перевірка платежів... {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"{'='*60}")
         
         transfers = self.get_recent_transactions()
         
         if not transfers:
             print("⚠️  Трансфери не знайдено або помилка API")
             return
+        
+        if not isinstance(transfers, list):
+            print(f"⚠️  Отримано не список трансферів: {type(transfers)}")
+            return
+        
+        print(f"📥 Отримано {len(transfers)} трансферів з API")
         
         new_transactions = self.process_transactions(transfers)
         
