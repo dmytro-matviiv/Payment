@@ -3,7 +3,7 @@ import time
 import requests
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from telegram import Bot
 from telegram.error import TelegramError
 import config
@@ -18,8 +18,31 @@ class PaymentMonitor:
         self.api_token = config.TRONSCAN_API_TOKEN
         self.channel_id = config.TELEGRAM_CHANNEL_ID
         self.processed_txns_file = "processed_transactions.json"
-        self.processed_txns = self.load_processed_txns()
+        self.processed_txns, saved_start_time = self.load_processed_txns()
         self.usdt_contract = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
+        
+        # Встановлюємо час запуску бота (timestamp в мілісекундах)
+        if saved_start_time:
+            self.bot_start_time = saved_start_time
+            print(f"⏰ Бот був запущений: {self.format_timestamp(saved_start_time)}")
+        else:
+            # Перший запуск - встановлюємо поточний час
+            self.bot_start_time = int(time.time() * 1000)
+            print(f"⏰ Перший запуск бота: {self.format_timestamp(self.bot_start_time)}")
+            print(f"📝 Всі транзакції до цього моменту будуть ігноруватися")
+    
+    def format_timestamp(self, timestamp_ms):
+        """Форматує timestamp в UTC+2 (Київський час)"""
+        try:
+            timestamp = float(timestamp_ms)
+            # Конвертуємо timestamp в UTC+2 (Київський час)
+            utc_time = datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc)
+            # Додаємо 2 години для UTC+2 (Україна)
+            ukraine_tz = timezone(timedelta(hours=2))
+            local_time = utc_time.astimezone(ukraine_tz)
+            return local_time.strftime("%Y-%m-%d %H:%M:%S")
+        except:
+            return "Невідомо"
     
     def load_processed_txns(self):
         """Завантажує список оброблених транзакцій"""
@@ -27,17 +50,18 @@ class PaymentMonitor:
             try:
                 with open(self.processed_txns_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    return set(data.get("txns", []))
+                    return set(data.get("txns", [])), data.get("bot_start_time")
             except Exception as e:
                 print(f"⚠️  Помилка завантаження: {e}")
-        return set()
+        return set(), None
     
     def save_processed_txns(self):
         """Зберігає список оброблених транзакцій"""
         try:
             data = {
                 "txns": list(self.processed_txns),
-                "last_update": datetime.now().isoformat()
+                "last_update": datetime.now().isoformat(),
+                "bot_start_time": self.bot_start_time
             }
             with open(self.processed_txns_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
@@ -412,6 +436,7 @@ class PaymentMonitor:
     def process_transactions(self, transactions):
         """Обробляє транзакції та повертає нові"""
         new_txns = []
+        old_txns_count = 0
         
         print(f"\n🔍 Обробка {len(transactions)} транзакцій...")
         
@@ -434,6 +459,29 @@ class PaymentMonitor:
                 # Перевіряємо чи вже оброблена
                 if txn_hash in self.processed_txns:
                     continue
+                
+                # Перевіряємо timestamp транзакції - ігноруємо старі транзакції
+                txn_timestamp = (
+                    txn.get("timestamp") or 
+                    txn.get("block_timestamp") or 
+                    txn.get("time") or 
+                    0
+                )
+                
+                try:
+                    txn_timestamp = float(txn_timestamp)
+                    # Якщо транзакція старіша за час запуску бота - ігноруємо її
+                    if txn_timestamp > 0 and txn_timestamp < self.bot_start_time:
+                        # Автоматично додаємо стару транзакцію в processed_txns
+                        self.processed_txns.add(txn_hash)
+                        old_txns_count += 1
+                        if old_txns_count <= 3:  # Логуємо перші 3 для інформації
+                            txn_date = self.format_timestamp(txn_timestamp)
+                            print(f"  ⏭️  Ігноруємо стару транзакцію: {txn_hash[:16]}... ({txn_date})")
+                        continue
+                except (ValueError, TypeError):
+                    # Якщо не вдалося отримати timestamp, продовжуємо обробку
+                    pass
                 
                 # Отримуємо адресу отримувача (різні формати)
                 to_addr = (
@@ -489,6 +537,8 @@ class PaymentMonitor:
                 traceback.print_exc()
                 continue
         
+        if old_txns_count > 0:
+            print(f"⏭️  Проігноровано {old_txns_count} старих транзакцій (до запуску бота)")
         print(f"📊 Знайдено {len(new_txns)} нових транзакцій >= 1 USDT\n")
         return new_txns
     
@@ -539,11 +589,7 @@ class PaymentMonitor:
                 0
             )
             
-            try:
-                timestamp = float(timestamp)
-                date_str = datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M:%S")
-            except:
-                date_str = "Невідомо"
+            date_str = self.format_timestamp(timestamp)
             
             # Формуємо повідомлення
             message = f"💰 <b>Нова оплата отримана!</b>\n\n"
@@ -690,11 +736,7 @@ class PaymentMonitor:
         is_usdt_txn = self.is_usdt(last_txn)
         
         # Форматуємо дату
-        try:
-            timestamp = float(timestamp)
-            date_str = datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M:%S")
-        except:
-            date_str = "N/A"
+        date_str = self.format_timestamp(timestamp)
         
         print(f"📋 Hash: {txn_hash}")
         print(f"📥 To: {to_addr}")
@@ -742,6 +784,37 @@ class PaymentMonitor:
             except Exception as e:
                 print(f"⚠️  Помилка каналу: {e}\n")
         
+        # При першому запуску автоматично додаємо всі існуючі транзакції в processed_txns
+        # Перевіряємо чи це перший запуск (файл не існує або bot_start_time щойно встановлений)
+        is_first_run = not os.path.exists(self.processed_txns_file) or len(self.processed_txns) == 0
+        
+        if is_first_run:
+            print("🔄 Перший запуск: обробка існуючих транзакцій...")
+            print("   (Всі транзакції до цього моменту будуть ігноруватися)\n")
+            
+            # Отримуємо всі транзакції
+            existing_transactions = self.get_transactions()
+            if existing_transactions:
+                print(f"📥 Знайдено {len(existing_transactions)} існуючих транзакцій")
+                added_count = 0
+                # Обробляємо їх, щоб додати в processed_txns (але не відправляємо повідомлення)
+                for txn in existing_transactions:
+                    txn_hash = (
+                        txn.get("hash") or 
+                        txn.get("transactionHash") or 
+                        txn.get("transaction_id") or 
+                        txn.get("txID") or 
+                        ""
+                    )
+                    if txn_hash:
+                        self.processed_txns.add(txn_hash)
+                        added_count += 1
+                
+                # Зберігаємо оброблені транзакції та bot_start_time
+                self.save_processed_txns()
+                print(f"✅ Додано {added_count} існуючих транзакцій в список оброблених")
+                print(f"💾 Збережено час запуску бота для майбутніх перевірок\n")
+        
         # ТЕСТОВА ПЕРЕВІРКА: показуємо останню транзакцію
         self.show_last_transaction()
         
@@ -750,7 +823,7 @@ class PaymentMonitor:
             f"✅ <b>Бот запущено!</b>\n\n"
             f"📍 <b>Адреса:</b> <code>{self.tron_address}</code>\n"
             f"⏱️  <b>Інтервал:</b> {config.CHECK_INTERVAL} сек\n"
-            f"🕐 <b>Час:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"🕐 <b>Час:</b> {datetime.now(timezone(timedelta(hours=2))).strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"🔗 <a href='https://tronscan.org/#/address/{self.tron_address}/transfers'>Переглянути транзакції</a>"
         )
         await self.send_message(startup_msg)
