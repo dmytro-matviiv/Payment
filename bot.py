@@ -335,6 +335,111 @@ class PaymentMonitor:
         else:
             print("ℹ️  Нових платежів не знайдено")
     
+    def show_last_transaction(self):
+        """Показує останню транзакцію для перевірки"""
+        print("\n" + "="*60)
+        print("🔍 ТЕСТОВА ПЕРЕВІРКА: Остання транзакція")
+        print("="*60)
+        
+        transactions = self.get_transactions()
+        
+        if not transactions or len(transactions) == 0:
+            print("⚠️  Транзакції не отримано")
+            print("="*60 + "\n")
+            return
+        
+        # Беремо першу (останню) транзакцію
+        last_txn = transactions[0]
+        
+        txn_hash = (
+            last_txn.get("hash") or 
+            last_txn.get("transactionHash") or 
+            last_txn.get("txID") or 
+            "N/A"
+        )
+        
+        to_addr = (
+            last_txn.get("toAddress") or 
+            last_txn.get("transferToAddress") or 
+            last_txn.get("to") or 
+            last_txn.get("to_address") or 
+            "N/A"
+        )
+        
+        from_addr = (
+            last_txn.get("fromAddress") or 
+            last_txn.get("transferFromAddress") or 
+            last_txn.get("from") or 
+            last_txn.get("from_address") or 
+            "N/A"
+        )
+        
+        amount_raw = (
+            last_txn.get("amount") or 
+            last_txn.get("quant") or 
+            last_txn.get("value") or 
+            last_txn.get("amount_str") or 
+            0
+        )
+        
+        token_symbol = (
+            last_txn.get("tokenSymbol") or 
+            last_txn.get("token_symbol") or 
+            last_txn.get("symbol") or 
+            "N/A"
+        )
+        
+        token_name = (
+            last_txn.get("tokenName") or 
+            last_txn.get("token_name") or 
+            last_txn.get("name") or 
+            "N/A"
+        )
+        
+        contract = (
+            last_txn.get("contractAddress") or 
+            last_txn.get("contract_address") or 
+            last_txn.get("tokenContractAddress") or 
+            "N/A"
+        )
+        
+        timestamp = (
+            last_txn.get("timestamp") or 
+            last_txn.get("block_timestamp") or 
+            last_txn.get("time") or 
+            0
+        )
+        
+        # Обчислюємо суму в USDT
+        amount_usdt = self.get_amount_usdt(last_txn)
+        is_usdt_txn = self.is_usdt(last_txn)
+        
+        # Форматуємо дату
+        try:
+            timestamp = float(timestamp)
+            date_str = datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M:%S")
+        except:
+            date_str = "N/A"
+        
+        print(f"📋 Hash: {txn_hash}")
+        print(f"📥 To: {to_addr}")
+        print(f"📤 From: {from_addr}")
+        print(f"💰 Amount (raw): {amount_raw}")
+        print(f"💰 Amount (USDT): {amount_usdt:.6f} USDT")
+        print(f"🪙 Token: {token_name} ({token_symbol})")
+        print(f"📄 Contract: {contract}")
+        print(f"🕐 Timestamp: {timestamp}")
+        print(f"📅 Date: {date_str}")
+        print(f"✅ Is USDT: {is_usdt_txn}")
+        print(f"✅ To our address: {to_addr.upper() == self.tron_address}")
+        print(f"✅ Amount >= 1 USDT: {amount_usdt >= 1.0}")
+        print(f"✅ Already processed: {txn_hash in self.processed_txns}")
+        
+        if txn_hash != "N/A":
+            print(f"\n🔗 Посилання: https://tronscan.org/#/transaction/{txn_hash}")
+        
+        print("="*60 + "\n")
+    
     async def start(self):
         """Запускає бота"""
         print("="*60)
@@ -362,13 +467,16 @@ class PaymentMonitor:
             except Exception as e:
                 print(f"⚠️  Помилка каналу: {e}\n")
         
+        # ТЕСТОВА ПЕРЕВІРКА: показуємо останню транзакцію
+        self.show_last_transaction()
+        
         # Відправляємо повідомлення про запуск
         startup_msg = (
             f"✅ <b>Бот запущено!</b>\n\n"
             f"📍 <b>Адреса:</b> <code>{self.tron_address}</code>\n"
             f"⏱️  <b>Інтервал:</b> {config.CHECK_INTERVAL} сек\n"
             f"🕐 <b>Час:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"🔗 <a href='https://tronscan.org/#/address/{self.tron_address}'>Переглянути адресу</a>"
+            f"🔗 <a href='https://tronscan.org/#/address/{self.tron_address}/transfers'>Переглянути транзакції</a>"
         )
         await self.send_message(startup_msg)
         
