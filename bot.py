@@ -91,42 +91,42 @@ class PaymentMonitor:
                         print(f"🔑 Headers: {list(headers.keys())}")
                     response = requests.get(url, headers=headers, params=params, timeout=15)
             
-                if response.status_code == 200:
-                    data = response.json()
-                    
-                    # Діагностика структури відповіді
-                    if isinstance(data, dict):
-                        print(f"📊 Структура відповіді: {list(data.keys())}")
-                    
-                    # Отримуємо список трансферів
-                    transfers = []
-                    if isinstance(data, dict):
-                        if "data" in data:
-                            transfers = data["data"]
-                        elif "transfers" in data:
-                            transfers = data["transfers"]
-                    elif isinstance(data, list):
-                        transfers = data
-                    
-                    if transfers and isinstance(transfers, list):
-                        print(f"✅ Отримано {len(transfers)} трансферів")
-                        # Показуємо приклад першої транзакції
-                        if len(transfers) > 0:
-                            first = transfers[0]
-                            print(f"🔍 Приклад: hash={first.get('hash', 'N/A')[:16]}..., to={first.get('toAddress', 'N/A')[:20]}...")
-                        return transfers
-                    else:
-                        print("⚠️  Трансфери не знайдено або невірний формат")
+                    if response.status_code == 200:
+                        data = response.json()
+                        
+                        # Діагностика структури відповіді
+                        if isinstance(data, dict):
+                            print(f"📊 Структура відповіді: {list(data.keys())}")
+                        
+                        # Отримуємо список трансферів
+                        transfers = []
+                        if isinstance(data, dict):
+                            if "data" in data:
+                                transfers = data["data"]
+                            elif "transfers" in data:
+                                transfers = data["transfers"]
+                        elif isinstance(data, list):
+                            transfers = data
+                        
+                        if transfers and isinstance(transfers, list):
+                            print(f"✅ Отримано {len(transfers)} трансферів")
+                            # Показуємо приклад першої транзакції
+                            if len(transfers) > 0:
+                                first = transfers[0]
+                                print(f"🔍 Приклад: hash={first.get('hash', 'N/A')[:16]}..., to={first.get('toAddress', 'N/A')[:20]}...")
+                            return transfers
+                        else:
+                            print("⚠️  Трансфери не знайдено або невірний формат")
+                            continue  # Спробуємо наступний варіант
+                    elif response.status_code == 400:
+                        print(f"⚠️  Помилка 400 з параметрами: {params}")
+                        print(f"Відповідь: {response.text[:300]}")
                         continue  # Спробуємо наступний варіант
-                elif response.status_code == 400:
-                    print(f"⚠️  Помилка 400 з параметрами: {params}")
-                    print(f"Відповідь: {response.text[:300]}")
-                    continue  # Спробуємо наступний варіант
-                else:
-                    print(f"❌ Помилка API: {response.status_code}")
-                    print(f"Відповідь: {response.text[:300]}")
-                    continue  # Спробуємо наступний варіант
-            except Exception as e:
+                    else:
+                        print(f"❌ Помилка API: {response.status_code}")
+                        print(f"Відповідь: {response.text[:300]}")
+                        continue  # Спробуємо наступний варіант
+                except Exception as e:
                 print(f"❌ Помилка запиту: {e}")
                 continue  # Спробуємо наступний варіант
         
