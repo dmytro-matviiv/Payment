@@ -44,111 +44,332 @@ class PaymentMonitor:
         except Exception as e:
             print(f"⚠️  Помилка збереження: {e}")
     
-    def get_transactions(self):
-        """Отримує останні TRC20 трансфери з Tronscan API"""
-        # Спробуємо різні варіанти headers
-        headers_variants = [
-            {"TRON-PRO-API-KEY": self.api_token},
-            {"TRON-PRO-API-KEY": self.api_token, "Content-Type": "application/json"},
-            {}  # Без API ключа (може працювати для публічних даних)
+    def get_transactions_trongrid(self):
+        """Альтернативний метод через TronGrid API"""
+        # Спробуємо спочатку з фільтром по USDT, потім без фільтра
+        variants = [
+            {"contract_address": self.usdt_contract, "name": "з фільтром USDT"},
+            {"name": "без фільтра (всі TRC20)"}
         ]
         
-        # Спробуємо різні endpoints та параметри
+        for variant in variants:
+            try:
+                url = f"https://api.trongrid.io/v1/accounts/{self.tron_address_original}/transactions/trc20"
+                params = {
+                    "limit": 50,
+                    "only_confirmed": True
+                }
+                if "contract_address" in variant:
+                    params["contract_address"] = variant["contract_address"]
+                
+                print(f"\n📡 TronGrid API ({variant['name']}): {url}")
+                print(f"📋 Параметри: {params}")
+                
+                response = requests.get(url, params=params, timeout=15)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    print(f"📊 TronGrid відповідь: тип={type(data)}, ключі={list(data.keys()) if isinstance(data, dict) else 'N/A'}")
+                    
+                    if "data" in data and isinstance(data["data"], list):
+                        transfers = data["data"]
+                        print(f"📊 TronGrid: знайдено {len(transfers)} транзакцій")
+                        
+                        if len(transfers) > 0:
+                            print(f"✅ TronGrid: Отримано {len(transfers)} транзакцій")
+                            # Показуємо приклад
+                            first = transfers[0]
+                            print(f"🔍 Приклад: transaction_id={first.get('transaction_id', 'N/A')[:32]}...")
+                            print(f"   to={first.get('to', 'N/A')}")
+                            print(f"   token={first.get('token_info', {}).get('symbol', 'N/A')}")
+                            
+                            # Конвертуємо формат TronGrid в формат, який очікує наш код
+                            converted = []
+                            for tx in transfers:
+                                token_info = tx.get("token_info", {})
+                                converted.append({
+                                    "hash": tx.get("transaction_id", ""),
+                                    "transactionHash": tx.get("transaction_id", ""),
+                                    "toAddress": tx.get("to", ""),
+                                    "fromAddress": tx.get("from", ""),
+                                    "amount": tx.get("value", "0"),
+                                    "timestamp": tx.get("block_timestamp", 0),
+                                    "contractAddress": token_info.get("address", ""),
+                                    "contract_address": token_info.get("address", ""),
+                                    "tokenSymbol": token_info.get("symbol", ""),
+                                    "token_symbol": token_info.get("symbol", ""),
+                                    "tokenName": token_info.get("name", ""),
+                                    "token_name": token_info.get("name", "")
+                                })
+                            return converted
+                        else:
+                            print("⚠️  TronGrid: порожній список транзакцій")
+                else:
+                    print(f"⚠️  TronGrid API помилка: {response.status_code}")
+                    print(f"Відповідь: {response.text[:300]}")
+            except Exception as e:
+                print(f"⚠️  TronGrid API помилка ({variant['name']}): {e}")
+                import traceback
+                traceback.print_exc()
+        
+        return None
+    
+    def get_transactions(self):
+        """Отримує останні TRC20 трансфери з Tronscan API"""
+        print(f"\n🔍 Пошук транзакцій для адреси: {self.tron_address_original}")
+        
+        # Спочатку спробуємо TronGrid API
+        trongrid_result = self.get_transactions_trongrid()
+        if trongrid_result:
+            return trongrid_result
+        
+        # Спробуємо різні варіанти headers (згідно з документацією Tronscan API)
+        headers_variants = [
+            {"TRON-PRO-API-KEY": self.api_token} if self.api_token else {},
+            {"TRON-PRO-API-KEY": self.api_token, "Content-Type": "application/json"} if self.api_token else {},
+            {}  # Без API ключа
+        ]
+        
+        # Endpoints згідно з офіційною документацією Tronscan API
+        # https://docs.tronscan.org/api-endpoints/transactions-and-transfers
         endpoints_to_try = [
+            # Варіант 1: Get trc20&721 transfers list - з фільтром по USDT та toAddress
             {
-                "url": "https://apilist.tronscan.org/api/transfer",
+                "url": "https://apilist.tronscanapi.com/api/transfer",
+                "params": {
+                    "toAddress": self.tron_address_original,
+                    "contract_address": self.usdt_contract,
+                    "start": 0,
+                    "limit": 50,
+                    "confirm": "true"  # Тільки підтверджені транзакції
+                },
+                "name": "TRC20 transfers (toAddress + USDT contract)"
+            },
+            # Варіант 2: Get trc20&721 transfers list - з relatedAddress та USDT
+            {
+                "url": "https://apilist.tronscanapi.com/api/transfer",
+                "params": {
+                    "relatedAddress": self.tron_address_original,
+                    "contract_address": self.usdt_contract,
+                    "start": 0,
+                    "limit": 50,
+                    "confirm": "true"
+                },
+                "name": "TRC20 transfers (relatedAddress + USDT contract)"
+            },
+            # Варіант 3: Get trc20&721 transfers list - тільки toAddress (всі TRC20)
+            {
+                "url": "https://apilist.tronscanapi.com/api/transfer",
+                "params": {
+                    "toAddress": self.tron_address_original,
+                    "start": 0,
+                    "limit": 50,
+                    "confirm": "true"
+                },
+                "name": "TRC20 transfers (toAddress, всі токени)"
+            },
+            # Варіант 4: Get account's transaction datas - з фільтром USDT
+            {
+                "url": f"https://apilist.tronscanapi.com/api/account/{self.tron_address_original}/transactions/trc20",
                 "params": {
                     "address": self.tron_address_original,
+                    "trc20Id": self.usdt_contract,
+                    "direction": 2,  # 2 = transfer-in (вхідні)
                     "start": 0,
-                    "limit": 50
-                }
+                    "limit": 50,
+                    "reverse": "true"  # Сортування за часом створення
+                },
+                "name": "Account TRC20 transactions (USDT, transfer-in)"
             },
+            # Варіант 5: Get account's transaction datas - всі TRC20
             {
-                "url": f"https://apilist.tronscan.org/api/account/{self.tron_address_original}/transactions/trc20",
-                "params": {
-                    "start": 0,
-                    "limit": 50
-                }
-            },
-            {
-                "url": "https://apilist.tronscan.org/api/transfer",
+                "url": f"https://apilist.tronscanapi.com/api/account/{self.tron_address_original}/transactions/trc20",
                 "params": {
                     "address": self.tron_address_original,
-                    "limit": 50
-                }
+                    "direction": 2,  # 2 = transfer-in
+                    "start": 0,
+                    "limit": 50,
+                    "reverse": "true"
+                },
+                "name": "Account TRC20 transactions (всі токени, transfer-in)"
+            },
+            # Варіант 6: Get trc20&721 transfers list - relatedAddress (всі TRC20)
+            {
+                "url": "https://apilist.tronscanapi.com/api/transfer",
+                "params": {
+                    "relatedAddress": self.tron_address_original,
+                    "start": 0,
+                    "limit": 50,
+                    "confirm": "true"
+                },
+                "name": "TRC20 transfers (relatedAddress, всі токени)"
             }
         ]
         
+        attempt = 0
         for headers in headers_variants:
             for endpoint_config in endpoints_to_try:
+                attempt += 1
                 url = endpoint_config["url"]
                 params = endpoint_config["params"]
+                endpoint_name = endpoint_config.get("name", "Unknown")
                 
                 try:
-                    print(f"📡 Запит до API: {url}")
+                    print(f"\n📡 Спроба {attempt}: {endpoint_name}")
+                    print(f"🔗 URL: {url}")
                     print(f"📋 Параметри: {params}")
                     if headers:
                         print(f"🔑 Headers: {list(headers.keys())}")
+                    
                     response = requests.get(url, headers=headers, params=params, timeout=15)
+                    print(f"📊 Статус відповіді: {response.status_code}")
             
                     if response.status_code == 200:
-                        data = response.json()
+                        try:
+                            data = response.json()
+                        except json.JSONDecodeError as e:
+                            print(f"❌ Помилка парсингу JSON: {e}")
+                            print(f"Відповідь (перші 500 символів): {response.text[:500]}")
+                            continue
                         
-                        # Діагностика структури відповіді
+                        # Детальна діагностика структури відповіді
+                        print(f"📊 Тип відповіді: {type(data)}")
                         if isinstance(data, dict):
-                            print(f"📊 Структура відповіді: {list(data.keys())}")
+                            print(f"📊 Ключі в відповіді: {list(data.keys())}")
+                            # Показуємо перші 800 символів JSON для діагностики
+                            json_str = json.dumps(data, indent=2, ensure_ascii=False)
+                            print(f"📄 Приклад даних: {json_str[:800]}...")
+                        elif isinstance(data, list):
+                            print(f"📊 Отримано список з {len(data)} елементів")
+                            if len(data) > 0:
+                                print(f"📄 Приклад першого елемента: {json.dumps(data[0], indent=2, ensure_ascii=False)[:400]}...")
                         
-                        # Отримуємо список трансферів
+                        # Отримуємо список трансферів згідно з документацією Tronscan API
                         transfers = []
                         if isinstance(data, dict):
+                            # Згідно з документацією, endpoint /api/transfer повертає {"data": [...]}
+                            # А endpoint /api/account/{address}/transactions/trc20 також повертає {"data": [...]}
                             if "data" in data:
                                 transfers = data["data"]
-                            elif "transfers" in data:
-                                transfers = data["transfers"]
+                                if isinstance(transfers, list):
+                                    print(f"✅ Знайдено ключ 'data' з {len(transfers)} елементів")
+                                else:
+                                    print(f"⚠️  Ключ 'data' не є списком (тип: {type(transfers)})")
+                            else:
+                                print(f"⚠️  Не знайдено ключа 'data'. Всі ключі: {list(data.keys())}")
+                                # Спробуємо знайти будь-який список в словнику
+                                for key, value in data.items():
+                                    if isinstance(value, list) and len(value) > 0:
+                                        # Перевіримо чи це виглядає як список транзакцій
+                                        first_item = value[0] if value else {}
+                                        if isinstance(first_item, dict):
+                                            # Перевіряємо наявність полів транзакції
+                                            tx_fields = ['hash', 'transactionHash', 'toAddress', 'fromAddress', 'to', 'from', 'transaction_id']
+                                            if any(k in first_item for k in tx_fields):
+                                                transfers = value
+                                                print(f"✅ Знайдено список транзакцій в ключі '{key}' з {len(transfers)} елементів")
+                                                break
                         elif isinstance(data, list):
                             transfers = data
+                            print(f"✅ Відповідь є списком з {len(transfers)} елементів")
                         
-                        if transfers and isinstance(transfers, list):
-                            print(f"✅ Отримано {len(transfers)} трансферів")
+                        if transfers and isinstance(transfers, list) and len(transfers) > 0:
+                            print(f"✅ УСПІХ! Отримано {len(transfers)} трансферів з {endpoint_name}")
                             # Показуємо приклад першої транзакції
-                            if len(transfers) > 0:
-                                first = transfers[0]
-                                print(f"🔍 Приклад: hash={first.get('hash', 'N/A')[:16]}..., to={first.get('toAddress', 'N/A')[:20]}...")
+                            first = transfers[0]
+                            print(f"🔍 Приклад першої транзакції:")
+                            print(f"   Hash: {first.get('hash', first.get('transactionHash', first.get('transaction_id', 'N/A')))[:32]}...")
+                            print(f"   To: {first.get('toAddress', first.get('to', 'N/A'))}")
+                            print(f"   From: {first.get('fromAddress', first.get('from', 'N/A'))}")
+                            print(f"   Amount: {first.get('amount', first.get('value', 'N/A'))}")
+                            print(f"   Token: {first.get('tokenInfo', {}).get('symbol', first.get('tokenSymbol', 'N/A'))}")
                             return transfers
                         else:
-                            print("⚠️  Трансфери не знайдено або невірний формат")
+                            if isinstance(transfers, list) and len(transfers) == 0:
+                                print(f"⚠️  Отримано порожній список трансферів з {endpoint_name}")
+                            else:
+                                print(f"⚠️  Трансфери не знайдено або невірний формат (тип: {type(transfers)})")
                             continue  # Спробуємо наступний варіант
                     elif response.status_code == 400:
-                        print(f"⚠️  Помилка 400 з параметрами: {params}")
-                        print(f"Відповідь: {response.text[:300]}")
-                        continue  # Спробуємо наступний варіант
+                        print(f"⚠️  Помилка 400 (Bad Request) - перевірте параметри")
+                        print(f"Відповідь: {response.text[:500]}")
+                        continue
+                    elif response.status_code == 401:
+                        print(f"⚠️  Помилка 401 (Unauthorized) - можливо невірний API ключ")
+                        print(f"Відповідь: {response.text[:500]}")
+                        continue
+                    elif response.status_code == 404:
+                        print(f"⚠️  Помилка 404 (Not Found) - endpoint не знайдено")
+                        continue
                     else:
                         print(f"❌ Помилка API: {response.status_code}")
-                        print(f"Відповідь: {response.text[:300]}")
-                        continue  # Спробуємо наступний варіант
+                        print(f"Відповідь: {response.text[:500]}")
+                        continue
+                except requests.exceptions.Timeout:
+                    print(f"❌ Таймаут запиту до {endpoint_name}")
+                    continue
+                except requests.exceptions.RequestException as e:
+                    print(f"❌ Помилка мережі: {e}")
+                    continue
                 except Exception as e:
-                    print(f"❌ Помилка запиту: {e}")
-                    continue  # Спробуємо наступний варіант
+                    print(f"❌ Несподівана помилка: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
         
         # Якщо всі варіанти не спрацювали
-        print("❌ Всі варіанти параметрів не спрацювали")
+        print(f"\n❌ Всі {attempt} спроб не спрацювали")
+        print(f"💡 Перевірте:")
+        print(f"   1. Чи правильна адреса: {self.tron_address_original}")
+        print(f"   2. Чи є транзакції на цій адресі (перевірте на tronscan.org)")
+        print(f"   3. Чи правильний API ключ (якщо використовується)")
         return []
     
     def is_usdt(self, txn):
         """Перевіряє чи це USDT TRC20 транзакція"""
-        # Перевірка contract address
+        # Перевірка contract address (різні формати)
         contract = (
             txn.get("contractAddress") or 
             txn.get("contract_address") or 
             txn.get("tokenContractAddress") or 
             ""
         )
+        
+        # Перевірка через tokenInfo (формат Tronscan API)
+        token_info = txn.get("tokenInfo") or txn.get("token_info") or {}
+        if isinstance(token_info, dict):
+            contract_from_info = token_info.get("address") or token_info.get("contractAddress") or ""
+            if contract_from_info:
+                contract = contract or contract_from_info
+        
         if contract and contract.upper() == self.usdt_contract.upper():
             return True
         
         # Перевірка по символу та назві
-        symbol = (txn.get("tokenSymbol") or txn.get("token_symbol") or txn.get("symbol") or "").upper()
-        name = (txn.get("tokenName") or txn.get("token_name") or txn.get("name") or "").upper()
+        symbol = (
+            txn.get("tokenSymbol") or 
+            txn.get("token_symbol") or 
+            txn.get("symbol") or 
+            ""
+        )
+        
+        # Перевірка символу в tokenInfo
+        if isinstance(token_info, dict):
+            symbol = symbol or token_info.get("symbol") or token_info.get("tokenAbbr") or ""
+        
+        name = (
+            txn.get("tokenName") or 
+            txn.get("token_name") or 
+            txn.get("name") or 
+            ""
+        )
+        
+        # Перевірка назви в tokenInfo
+        if isinstance(token_info, dict):
+            name = name or token_info.get("name") or token_info.get("tokenName") or ""
+        
+        symbol = symbol.upper()
+        name = name.upper()
         
         if "USDT" in symbol or "USDT" in name:
             return True
@@ -196,10 +417,11 @@ class PaymentMonitor:
         
         for i, txn in enumerate(transactions):
             try:
-                # Отримуємо hash
+                # Отримуємо hash (різні формати)
                 txn_hash = (
                     txn.get("hash") or 
                     txn.get("transactionHash") or 
+                    txn.get("transaction_id") or 
                     txn.get("txID") or 
                     ""
                 )
@@ -213,7 +435,7 @@ class PaymentMonitor:
                 if txn_hash in self.processed_txns:
                     continue
                 
-                # Отримуємо адресу отримувача
+                # Отримуємо адресу отримувача (різні формати)
                 to_addr = (
                     txn.get("toAddress") or 
                     txn.get("transferToAddress") or 
@@ -221,6 +443,12 @@ class PaymentMonitor:
                     txn.get("to_address") or 
                     ""
                 )
+                
+                # Для Tronscan API може бути toAddressList
+                if not to_addr and "toAddressList" in txn:
+                    to_address_list = txn.get("toAddressList", [])
+                    if isinstance(to_address_list, list) and len(to_address_list) > 0:
+                        to_addr = to_address_list[0]
                 
                 if to_addr:
                     to_addr = to_addr.upper()
@@ -267,10 +495,11 @@ class PaymentMonitor:
     def format_message(self, txn):
         """Форматує повідомлення про транзакцію"""
         try:
-            # Отримуємо дані
+            # Отримуємо дані (підтримка різних форматів)
             txn_hash = (
                 txn.get("hash") or 
                 txn.get("transactionHash") or 
+                txn.get("transaction_id") or 
                 txn.get("txID") or 
                 ""
             )
@@ -282,6 +511,7 @@ class PaymentMonitor:
                 txn.get("transferFromAddress") or 
                 txn.get("from") or 
                 txn.get("from_address") or 
+                txn.get("ownerAddress") or  # Формат Tronscan API
                 "Невідомо"
             )
             
@@ -290,8 +520,17 @@ class PaymentMonitor:
                 txn.get("transferToAddress") or 
                 txn.get("to") or 
                 txn.get("to_address") or 
-                self.tron_address
+                ""
             )
+            
+            # Для Tronscan API може бути toAddressList
+            if not to_addr and "toAddressList" in txn:
+                to_address_list = txn.get("toAddressList", [])
+                if isinstance(to_address_list, list) and len(to_address_list) > 0:
+                    to_addr = to_address_list[0]
+            
+            if not to_addr:
+                to_addr = self.tron_address
             
             timestamp = (
                 txn.get("timestamp") or 
