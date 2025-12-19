@@ -48,7 +48,9 @@ class PaymentMonitor:
     def get_recent_transactions(self):
         """Отримує останні трансфери токенів з Tronscan API"""
         # Спробуємо різні endpoints для transfers
+        # Використовуємо endpoint для TRC20 токенів, який краще працює з USDT
         endpoints = [
+            "https://apilist.tronscan.org/api/transfer?trc20=true",  # Спеціально для TRC20
             "https://apilist.tronscan.org/api/transfer",
             "https://apilist.tronscan.org/api/trc20/transfer",
             "https://apilist.tronscan.org/api/transfer/trc20"
@@ -60,12 +62,22 @@ class PaymentMonitor:
         
         for url in endpoints:
             try:
-                params = {
-                    "address": self.tron_address,
-                    "start": 0,
-                    "limit": 50,
-                    "sort": "-timestamp"
-                }
+                # Для TRC20 endpoint використовуємо інші параметри
+                if "trc20" in url.lower():
+                    params = {
+                        "address": self.tron_address,
+                        "start": 0,
+                        "limit": 100,  # Збільшуємо limit для TRC20
+                        "sort": "-timestamp",
+                        "trc20": "true"
+                    }
+                else:
+                    params = {
+                        "address": self.tron_address,
+                        "start": 0,
+                        "limit": 100,  # Збільшуємо limit
+                        "sort": "-timestamp"
+                    }
                 
                 print(f"📡 Запит до API: {url}")
                 print(f"📋 Параметри: {params}")
@@ -99,10 +111,12 @@ class PaymentMonitor:
                         print(f"🔍 Приклад першого трансферу (ключі): {list(transfers[0].keys()) if isinstance(transfers[0], dict) else 'not a dict'}")
                         first_transfer = transfers[0]
                         print(f"   Hash: {first_transfer.get('hash') or first_transfer.get('transactionHash') or first_transfer.get('txID') or 'N/A'}")
-                        print(f"   To: {first_transfer.get('toAddress') or first_transfer.get('transferToAddress') or first_transfer.get('to') or 'N/A'}")
-                        print(f"   From: {first_transfer.get('fromAddress') or first_transfer.get('transferFromAddress') or first_transfer.get('from') or 'N/A'}")
-                        print(f"   Amount: {first_transfer.get('amount') or first_transfer.get('quant') or first_transfer.get('value') or 'N/A'}")
-                        print(f"   Token: {first_transfer.get('tokenName') or first_transfer.get('token_name') or first_transfer.get('token') or 'N/A'}")
+                        print(f"   To: {first_transfer.get('toAddress') or first_transfer.get('transferToAddress') or first_transfer.get('to') or first_transfer.get('to_address') or 'N/A'}")
+                        print(f"   From: {first_transfer.get('fromAddress') or first_transfer.get('transferFromAddress') or first_transfer.get('from') or first_transfer.get('from_address') or 'N/A'}")
+                        print(f"   Amount: {first_transfer.get('amount') or first_transfer.get('quant') or first_transfer.get('value') or first_transfer.get('amount_str') or 'N/A'}")
+                        print(f"   Token: {first_transfer.get('tokenName') or first_transfer.get('token_name') or first_transfer.get('name') or first_transfer.get('token') or 'N/A'}")
+                        print(f"   Symbol: {first_transfer.get('tokenSymbol') or first_transfer.get('token_symbol') or first_transfer.get('symbol') or 'N/A'}")
+                        print(f"   Contract: {first_transfer.get('contractAddress') or first_transfer.get('contract_address') or first_transfer.get('tokenContractAddress') or 'N/A'}")
                         print(f"   Timestamp: {first_transfer.get('timestamp') or first_transfer.get('block_timestamp') or first_transfer.get('time') or 'N/A'}")
                         
                         return transfers
@@ -194,11 +208,15 @@ class PaymentMonitor:
             amount_raw = (txn.get("amount") or 
                          txn.get("quant") or 
                          txn.get("value") or 
+                         txn.get("amount_str") or
                          0)
             
             # Конвертуємо в число якщо потрібно
             try:
-                amount_raw = float(amount_raw) if amount_raw else 0
+                if isinstance(amount_raw, str):
+                    amount_raw = float(amount_raw)
+                else:
+                    amount_raw = float(amount_raw) if amount_raw else 0
             except (ValueError, TypeError):
                 amount_raw = 0
             
@@ -333,6 +351,60 @@ class PaymentMonitor:
                 print("   Перевірте права бота в каналі (має бути адміністратором)")
             return False
     
+    def get_transaction_amount_usdt(self, txn):
+        """Обчислює суму транзакції в USDT"""
+        try:
+            # Отримуємо суму
+            amount_raw = (txn.get("amount") or 
+                         txn.get("quant") or 
+                         txn.get("value") or 
+                         txn.get("amount_str") or
+                         0)
+            
+            # Конвертуємо в число
+            try:
+                if isinstance(amount_raw, str):
+                    amount_raw = float(amount_raw)
+                else:
+                    amount_raw = float(amount_raw) if amount_raw else 0
+            except (ValueError, TypeError):
+                amount_raw = 0
+            
+            token_name = (txn.get("tokenName") or 
+                         txn.get("token_name") or 
+                         txn.get("name") or 
+                         "TRX")
+            token_name = token_name or "TRX"
+            
+            token_symbol = (txn.get("tokenSymbol") or 
+                           txn.get("token_symbol") or 
+                           txn.get("symbol") or 
+                           "")
+            token_symbol = token_symbol or ""
+            
+            # Визначаємо чи це USDT
+            is_usdt = False
+            if "USDT" in (token_name or "").upper() or "USDT" in (token_symbol or "").upper():
+                is_usdt = True
+                # USDT TRC20 має 6 десяткових знаків
+                if amount_raw > 0:
+                    amount = amount_raw / 1000000  # 1 USDT = 1,000,000 (6 zeros)
+                else:
+                    amount = 0
+            else:
+                # Для TRX та інших токенів конвертуємо з sun (1 TRX = 1,000,000 sun)
+                if amount_raw > 0:
+                    amount = amount_raw / 1000000
+                else:
+                    amount = 0
+            
+            # Конвертуємо все в USDT
+            usdt_amount, _ = self.convert_to_usdt(amount, token_name, token_symbol)
+            return usdt_amount
+        except Exception as e:
+            print(f"⚠️  Помилка обчислення суми: {e}")
+            return 0
+    
     def is_usdt_transaction(self, txn):
         """Перевіряє чи це USDT (TRC20) транзакція"""
         try:
@@ -353,6 +425,12 @@ class PaymentMonitor:
                 if self.usdt_contract.upper() in contract_address.upper():
                     return True
             
+            # Перевіряємо tokenType - має бути trc20 для USDT
+            token_type = (txn.get("tokenType") or 
+                         txn.get("token_type") or 
+                         txn.get("tokenType2") or 
+                         "").lower()
+            
             # Перевіряємо по назві та символу токена
             token_name = (txn.get("tokenName") or 
                          txn.get("token_name") or 
@@ -365,7 +443,11 @@ class PaymentMonitor:
                            txn.get("symbol") or 
                            "").upper()
             
-            # Якщо в назві або символі є USDT
+            # Якщо це TRC20 токен і в назві або символі є USDT
+            if token_type == "trc20" and ("USDT" in token_name or "USDT" in token_symbol):
+                return True
+            
+            # Також перевіряємо без tokenType якщо є USDT в назві/символі
             if "USDT" in token_name or "USDT" in token_symbol:
                 return True
             
@@ -413,34 +495,54 @@ class PaymentMonitor:
             to_address = (txn.get("toAddress") or 
                          txn.get("transferToAddress") or 
                          txn.get("to") or 
+                         txn.get("to_address") or
                          "")
             
             from_address = (txn.get("fromAddress") or 
                           txn.get("transferFromAddress") or 
                           txn.get("from") or 
+                          txn.get("from_address") or
                           "")
             
-            # Перевіряємо чи це нова транзакція (після останньої перевірки)
+            # Перевіряємо чи це нова транзакція (не в списку оброблених)
             if txn_hash and txn_hash not in self.processed_txns:
-                # Перевіряємо чи це транзакція після останньої перевірки
-                if txn_timestamp > 0 and txn_timestamp < self.last_checked_timestamp:
-                    # Стара транзакція, пропускаємо
-                    continue
-                
-                # Перевіряємо чи це вхідна транзакція (оплата)
+                # Перевіряємо чи це вхідна транзакція (оплата) на нашу адресу
                 if to_address and to_address.upper() == self.tron_address.upper():
                     # Перевіряємо чи це USDT (TRC20)
                     if self.is_usdt_transaction(txn):
-                        print(f"  ✅ Знайдено новий USDT трансфер: hash={txn_hash[:10]}..., to={to_address[:10]}..., timestamp={txn_timestamp}")
+                        # Перевіряємо timestamp - обробляємо тільки транзакції не старіші за 7 днів
+                        # (щоб не обробляти дуже старі транзакції при першому запуску)
+                        current_time_ms = int(time.time() * 1000)
+                        seven_days_ago_ms = current_time_ms - (7 * 24 * 60 * 60 * 1000)
+                        
+                        if txn_timestamp > 0 and txn_timestamp < seven_days_ago_ms:
+                            print(f"  ⏰ Трансфер занадто старий (пропускаємо): hash={txn_hash[:10]}..., timestamp={txn_timestamp}")
+                            continue
+                        
+                        # Перевіряємо суму - тільки транзакції >= 1 USDT
+                        usdt_amount = self.get_transaction_amount_usdt(txn)
+                        if usdt_amount < 1.0:
+                            print(f"  ⚠️  Трансфер менше 1 USDT (пропускаємо): hash={txn_hash[:10]}..., сума={usdt_amount:.2f} USDT")
+                            # Все одно позначаємо як оброблену, щоб не перевіряти знову
+                            self.processed_txns.add(txn_hash)
+                            continue
+                        
+                        print(f"  ✅ Знайдено новий USDT трансфер >= 1 USDT: hash={txn_hash[:10]}..., to={to_address[:10]}..., сума={usdt_amount:.2f} USDT, timestamp={txn_timestamp}")
+                        print(f"     Час транзакції: {datetime.fromtimestamp(txn_timestamp / 1000).strftime('%Y-%m-%d %H:%M:%S') if txn_timestamp > 0 else 'N/A'}")
                         new_transactions.append(txn)
                         self.processed_txns.add(txn_hash)
                     else:
-                        print(f"  ⚠️  Трансфер не USDT (пропускаємо): hash={txn_hash[:10]}...")
+                        # Діагностика: чому не USDT
+                        token_name = (txn.get("tokenName") or txn.get("token_name") or txn.get("name") or "N/A")
+                        token_symbol = (txn.get("tokenSymbol") or txn.get("token_symbol") or txn.get("symbol") or "N/A")
+                        contract_addr = (txn.get("contractAddress") or txn.get("contract_address") or txn.get("tokenContractAddress") or "N/A")
+                        print(f"  ⚠️  Трансфер не USDT (пропускаємо): hash={txn_hash[:10]}..., token={token_name}/{token_symbol}, contract={contract_addr[:20] if contract_addr != 'N/A' else 'N/A'}...")
                 else:
-                    # Не на нашу адресу, пропускаємо без виводу
-                    pass
+                    # Діагностика для транзакцій не на нашу адресу (тільки для USDT)
+                    if self.is_usdt_transaction(txn):
+                        print(f"  ⚠️  USDT трансфер не на нашу адресу: hash={txn_hash[:10]}..., to={to_address[:20] if to_address else 'N/A'}..., наша={self.tron_address[:20]}...")
             else:
-                # Вже оброблено, пропускаємо без виводу
+                # Вже оброблено - не виводимо, щоб не спамити
                 pass
         
         print(f"📊 Підсумок: знайдено {len(new_transactions)} нових USDT платежів")
