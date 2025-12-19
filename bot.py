@@ -11,6 +11,9 @@ import config
 class PaymentMonitor:
     def __init__(self):
         self.bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
+        # Зберігаємо адресу в оригінальному форматі для API
+        self.tron_address_original = config.TRON_ADDRESS
+        # Для порівняння використовуємо upper case
         self.tron_address = config.TRON_ADDRESS.upper()
         self.api_token = config.TRONSCAN_API_TOKEN
         self.channel_id = config.TELEGRAM_CHANNEL_ID
@@ -43,60 +46,93 @@ class PaymentMonitor:
     
     def get_transactions(self):
         """Отримує останні TRC20 трансфери з Tronscan API"""
-        headers = {
-            "TRON-PRO-API-KEY": self.api_token
-        }
+        # Спробуємо різні варіанти headers
+        headers_variants = [
+            {"TRON-PRO-API-KEY": self.api_token},
+            {"TRON-PRO-API-KEY": self.api_token, "Content-Type": "application/json"},
+            {}  # Без API ключа (може працювати для публічних даних)
+        ]
         
-        # Використовуємо основний endpoint для transfers
-        url = "https://apilist.tronscan.org/api/transfer"
-        params = {
-            "address": self.tron_address,
-            "start": 0,
-            "limit": 200,
-            "sort": "-timestamp"
-        }
+        # Спробуємо різні endpoints та параметри
+        endpoints_to_try = [
+            {
+                "url": "https://apilist.tronscan.org/api/transfer",
+                "params": {
+                    "address": self.tron_address_original,
+                    "start": 0,
+                    "limit": 50
+                }
+            },
+            {
+                "url": f"https://apilist.tronscan.org/api/account/{self.tron_address_original}/transactions/trc20",
+                "params": {
+                    "start": 0,
+                    "limit": 50
+                }
+            },
+            {
+                "url": "https://apilist.tronscan.org/api/transfer",
+                "params": {
+                    "address": self.tron_address_original,
+                    "limit": 50
+                }
+            }
+        ]
         
-        try:
-            print(f"📡 Запит до API: {url}")
-            print(f"📋 Параметри: address={self.tron_address}, limit=200")
-            response = requests.get(url, headers=headers, params=params, timeout=15)
+        for headers in headers_variants:
+            for endpoint_config in endpoints_to_try:
+                url = endpoint_config["url"]
+                params = endpoint_config["params"]
+                
+                try:
+                    print(f"📡 Запит до API: {url}")
+                    print(f"📋 Параметри: {params}")
+                    if headers:
+                        print(f"🔑 Headers: {list(headers.keys())}")
+                    response = requests.get(url, headers=headers, params=params, timeout=15)
             
-            if response.status_code == 200:
-                data = response.json()
-                
-                # Діагностика структури відповіді
-                if isinstance(data, dict):
-                    print(f"📊 Структура відповіді: {list(data.keys())}")
-                
-                # Отримуємо список трансферів
-                transfers = []
-                if isinstance(data, dict):
-                    if "data" in data:
-                        transfers = data["data"]
-                    elif "transfers" in data:
-                        transfers = data["transfers"]
-                elif isinstance(data, list):
-                    transfers = data
-                
-                if transfers and isinstance(transfers, list):
-                    print(f"✅ Отримано {len(transfers)} трансферів")
-                    # Показуємо приклад першої транзакції
-                    if len(transfers) > 0:
-                        first = transfers[0]
-                        print(f"🔍 Приклад: hash={first.get('hash', 'N/A')[:16]}..., to={first.get('toAddress', 'N/A')[:20]}...")
-                    return transfers
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    # Діагностика структури відповіді
+                    if isinstance(data, dict):
+                        print(f"📊 Структура відповіді: {list(data.keys())}")
+                    
+                    # Отримуємо список трансферів
+                    transfers = []
+                    if isinstance(data, dict):
+                        if "data" in data:
+                            transfers = data["data"]
+                        elif "transfers" in data:
+                            transfers = data["transfers"]
+                    elif isinstance(data, list):
+                        transfers = data
+                    
+                    if transfers and isinstance(transfers, list):
+                        print(f"✅ Отримано {len(transfers)} трансферів")
+                        # Показуємо приклад першої транзакції
+                        if len(transfers) > 0:
+                            first = transfers[0]
+                            print(f"🔍 Приклад: hash={first.get('hash', 'N/A')[:16]}..., to={first.get('toAddress', 'N/A')[:20]}...")
+                        return transfers
+                    else:
+                        print("⚠️  Трансфери не знайдено або невірний формат")
+                        continue  # Спробуємо наступний варіант
+                elif response.status_code == 400:
+                    print(f"⚠️  Помилка 400 з параметрами: {params}")
+                    print(f"Відповідь: {response.text[:300]}")
+                    continue  # Спробуємо наступний варіант
                 else:
-                    print("⚠️  Трансфери не знайдено або невірний формат")
-                    return []
-            else:
-                print(f"❌ Помилка API: {response.status_code}")
-                print(f"Відповідь: {response.text[:300]}")
-                return []
-        except Exception as e:
-            print(f"❌ Помилка запиту: {e}")
-            import traceback
-            traceback.print_exc()
-            return []
+                    print(f"❌ Помилка API: {response.status_code}")
+                    print(f"Відповідь: {response.text[:300]}")
+                    continue  # Спробуємо наступний варіант
+            except Exception as e:
+                print(f"❌ Помилка запиту: {e}")
+                continue  # Спробуємо наступний варіант
+        
+        # Якщо всі варіанти не спрацювали
+        print("❌ Всі варіанти параметрів не спрацювали")
+        return []
     
     def is_usdt(self, txn):
         """Перевіряє чи це USDT TRC20 транзакція"""
