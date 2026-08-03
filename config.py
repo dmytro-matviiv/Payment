@@ -9,7 +9,7 @@ TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID", "@payment_trc20_001")  # 
 
 # Tronscan API Configuration
 TRONSCAN_API_TOKEN = os.getenv("TRONSCAN_API_TOKEN", "3bfa787b-22a1-4c79-a2f5-b46dc062ee9f")
-TRON_ADDRESS = os.getenv("TRON_ADDRESS", "TYY4QoQ8nA4geSoYpueQ14DLFnHhYBKCiR")
+TRON_ADDRESS = os.getenv("TRON_ADDRESS", "TKvPkbRhRC1XK5sk4P8wShrkuQcYotrH1d")
 
 # Monitoring Configuration
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "30"))  # секунди між перевірками
